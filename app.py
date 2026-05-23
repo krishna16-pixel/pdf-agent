@@ -50,12 +50,21 @@ st.markdown("<p style='text-align:center; color:#555;'>Enter any topic and get a
 st.divider()
 
 # =========================
-# SIDEBAR — API KEY
+# API KEY — FROM SECRETS ONLY
+# =========================
+
+try:
+    api_key = st.secrets["GROQ_API_KEY"]
+except Exception:
+    st.error("⚠️ GROQ_API_KEY not found in Streamlit secrets. Please add it in Settings → Secrets.")
+    st.stop()
+
+# =========================
+# SIDEBAR INFO ONLY
 # =========================
 
 with st.sidebar:
-    st.markdown("### ⚙️ Settings")
-    api_key = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
+    st.markdown("### 📄 AI PDF Report Generator")
     st.markdown("---")
     st.markdown("**Supported Section Types:**")
     st.markdown("""
@@ -64,6 +73,13 @@ with st.sidebar:
     - ✔✘ Advantages vs Disadvantages
     - 📊 Comparison tables
     - 🖥️ ASCII diagrams
+    """)
+    st.markdown("---")
+    st.markdown("**How to use:**")
+    st.markdown("""
+    1. Type any topic below
+    2. Click Generate
+    3. Download your PDF
     """)
     st.markdown("---")
     st.caption("Powered by Groq LLaMA 3.1 + ReportLab")
@@ -121,7 +137,7 @@ def extract_json(text):
         return json.loads(cleaned)
 
 # =========================
-# PROMPT
+# PROMPT BUILDER
 # =========================
 
 def build_prompt(user_input):
@@ -139,15 +155,15 @@ CRITICAL JSON RULES:
 
 CONTENT RULES:
 - Pick ONLY sections relevant to the topic.
-- "Advantages vs Disadvantages" ONLY if topic benefits from comparison.
-- "How It Works" for technical/process topics.
-- "History" for historical topics.
-- "Types" if topic has variants.
-- "Applications" for tech/science topics.
-- "Comparison Table" if comparing multiple things.
-- "ASCII Diagram" for structural/process/flow topics.
+- Include "Advantages vs Disadvantages" ONLY if topic benefits from comparison.
+- Include "How It Works" for technical/process topics.
+- Include "History" for historical topics.
+- Include "Types" if topic has variants.
+- Include "Applications" for tech/science topics.
+- Include "Comparison Table" if comparing multiple things.
+- Include "ASCII Diagram" for structural/process/flow topics.
 - Always include Introduction and Conclusion.
-- Every section MUST be 150-200+ words minimum.
+- Every section MUST have 150-200+ words minimum.
 
 JSON FORMAT:
 {{
@@ -198,7 +214,7 @@ TOPIC: {user_input}
 
 def get_styles():
     styles = getSampleStyleSheet()
-    return {
+    return {{
         "title": ParagraphStyle("title", parent=styles["Heading1"],
             fontSize=26, alignment=TA_CENTER,
             textColor=colors.HexColor("#1f4788"), spaceAfter=10),
@@ -217,14 +233,14 @@ def get_styles():
         "caption": ParagraphStyle("caption", parent=styles["Normal"],
             fontSize=9, alignment=TA_CENTER,
             textColor=colors.HexColor("#555555"), spaceAfter=8),
-    }
+    }}
 
 # =========================
-# PDF BUILDER → returns bytes
+# PDF BUILDER
 # =========================
 
 def create_pdf_bytes(title, content_list):
-    buffer = io.BytesIO()       # ← write to memory, not disk
+    buffer = io.BytesIO()
     S = get_styles()
 
     doc = SimpleDocTemplate(
@@ -235,7 +251,7 @@ def create_pdf_bytes(title, content_list):
 
     elements = []
 
-    # Title page
+    # ── Title page ──────────────────────────────────────────
     elements.append(Spacer(1, 2.8*inch))
     elements.append(Paragraph(title, S["title"]))
     elements.append(Spacer(1, 0.3*inch))
@@ -247,27 +263,33 @@ def create_pdf_bytes(title, content_list):
     elements.append(line)
     elements.append(PageBreak())
 
+    # ── Dynamic sections ────────────────────────────────────
     for section in content_list:
         stype   = section.get("type", "text")
         heading = section.get("heading", "")
 
         parts = [Paragraph(heading, S["heading"]), Spacer(1, 0.04*inch)]
 
+        # Plain text
         if stype == "text":
             body = str(section.get("body", "")).replace("\\n", "<br/>").replace("\n", "<br/>")
             parts.append(Paragraph(body, S["body"]))
 
+        # Bullet list
         elif stype == "bullets":
             for item in section.get("items", []):
                 t = str(item).replace("\\n", " ").replace("\n", " ")
                 parts.append(Paragraph("• " + t, S["bullet"]))
 
+        # Advantages vs Disadvantages
         elif stype == "table_adv_dis":
             adv = section.get("advantages", [])
             dis = section.get("disadvantages", [])
             max_len = max(len(adv), len(dis), 1)
-            td = [[Paragraph("<b>✔ Advantages</b>", S["body"]),
-                   Paragraph("<b>✘ Disadvantages</b>", S["body"])]]
+            td = [[
+                Paragraph("<b>✔ Advantages</b>", S["body"]),
+                Paragraph("<b>✘ Disadvantages</b>", S["body"])
+            ]]
             for i in range(max_len):
                 a = str(adv[i]) if i < len(adv) else ""
                 d = str(dis[i]) if i < len(dis) else ""
@@ -289,10 +311,12 @@ def create_pdf_bytes(title, content_list):
             ]))
             parts.append(tbl)
 
+        # Comparison table
         elif stype == "comparison_table":
             cols = section.get("columns", [])
             rows = section.get("rows", [])
-            if not cols: continue
+            if not cols:
+                continue
             cw = doc.width / len(cols)
             td = [[Paragraph(f"<b>{c}</b>", S["body"]) for c in cols]]
             for row in rows:
@@ -313,6 +337,7 @@ def create_pdf_bytes(title, content_list):
             ]))
             parts.append(tbl)
 
+        # ASCII diagram
         elif stype == "ascii_diagram":
             diagram = section.get("diagram", "").replace("\\n", "\n")
             caption = section.get("caption", "")
@@ -336,7 +361,7 @@ def create_pdf_bytes(title, content_list):
 
     doc.build(elements)
     buffer.seek(0)
-    return buffer.read()   # return bytes
+    return buffer.read()
 
 # =========================
 # MAIN UI
@@ -353,9 +378,7 @@ with col2:
     generate = st.button("🚀 Generate PDF Report", use_container_width=True)
 
 if generate:
-    if not api_key:
-        st.error("⚠️ Please enter your Groq API Key in the sidebar.")
-    elif not topic.strip():
+    if not topic.strip():
         st.warning("⚠️ Please enter a topic.")
     else:
         with st.spinner("⏳ Generating content with AI..."):
@@ -377,13 +400,21 @@ if generate:
                 # Section preview
                 with st.expander("📋 Report Sections Preview"):
                     for i, sec in enumerate(content, 1):
-                        st.markdown(f"**{i}. {sec.get('heading','')}** — `{sec.get('type','')}`")
+                        icon = {
+                            "text":           "📝",
+                            "bullets":        "🔵",
+                            "table_adv_dis":  "✔✘",
+                            "comparison_table":"📊",
+                            "ascii_diagram":  "🖥️"
+                        }.get(sec.get("type",""), "📄")
+                        st.markdown(f"{icon} **{i}. {sec.get('heading','')}** — `{sec.get('type','')}`")
 
                 # Download button
+                safe_title = title[:40].replace(' ', '_')
                 st.download_button(
                     label="⬇️ Download PDF Report",
                     data=pdf_bytes,
-                    file_name=f"{title[:40].replace(' ','_')}.pdf",
+                    file_name=f"{safe_title}.pdf",
                     mime="application/pdf",
                     use_container_width=True
                 )
