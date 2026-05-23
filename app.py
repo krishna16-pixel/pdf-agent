@@ -98,7 +98,7 @@ with st.sidebar:
 def get_client(key):
     return ChatGroq(
         api_key=key,
-        model="llama-3.1-70b-versatile",
+        model="llama-3.1-8b-instant",
         temperature=0
     )
 
