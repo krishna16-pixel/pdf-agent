@@ -97,48 +97,144 @@ def get_client(key):
 # =========================
 
 def clean_json_text(text):
+    # Remove markdown fences
     text = text.replace("```json", "").replace("```", "")
-    text = text.replace("\u201c", '\\"').replace("\u201d", '\\"')
-    text = text.replace("\u2018", "\\'").replace("\u2019", "\\'")
 
-    def fix_newlines(s):
-        result = []
-        inside = False
-        for i, ch in enumerate(s):
-            if ch == '"' and (i == 0 or s[i-1] != '\\'):
-                inside = not inside
-                result.append(ch)
-            elif ch == '\n' and inside:
-                result.append('\\n')
-            elif ch == '\r' and inside:
-                pass
-            elif ch == '\t' and inside:
-                result.append('  ')
-            else:
-                result.append(ch)
-        return ''.join(result)
+    # Replace smart/curly quotes
+    text = text.replace("\u201c", '"').replace("\u201d", '"')
+    text = text.replace("\u2018", "'").replace("\u2019", "'")
 
-    text = fix_newlines(text)
-    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', ' ', text)
-
+    # Extract only JSON object
     start = text.find("{")
     end   = text.rfind("}") + 1
     if start == -1 or end == 0:
         raise ValueError("No JSON object found in response")
-    return text[start:end]
+    text = text[start:end]
+
+    # Fix real newlines inside string values
+    def fix_newlines(s):
+        result  = []
+        inside  = False
+        i       = 0
+        while i < len(s):
+            ch = s[i]
+            if ch == '\\' and i + 1 < len(s):
+                result.append(ch)
+                result.append(s[i+1])
+                i += 2
+                continue
+            if ch == '"':
+                inside = not inside
+            if inside and ch == '\n':
+                result.append('\\n')
+            elif inside and ch == '\r':
+                pass
+            elif inside and ch == '\t':
+                result.append(' ')
+            else:
+                result.append(ch)
+            i += 1
+        return ''.join(result)
+
+    text = fix_newlines(text)
+
+    # Remove all control characters
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+
+    return text
+
+
+def repair_json(text):
+    """Multi-stage JSON repair for broken LLM output."""
+
+    # Stage 1 — Remove trailing commas
+    text = re.sub(r',\s*([}\]])', r'\1', text)
+
+    # Stage 2 — Fix unescaped quotes inside strings
+    # Replace " that are not preceded by \ and not structural
+    def fix_inner_quotes(s):
+        result  = []
+        inside  = False
+        i       = 0
+        while i < len(s):
+            ch = s[i]
+            if ch == '\\' and i + 1 < len(s):
+                result.append(ch)
+                result.append(s[i+1])
+                i += 2
+                continue
+            # Check if this quote is structural (key/value boundary)
+            if ch == '"':
+                if not inside:
+                    inside = True
+                    result.append(ch)
+                else:
+                    # Peek ahead — if next non-space is : , } ] then it's closing
+                    j = i + 1
+                    while j < len(s) and s[j] == ' ':
+                        j += 1
+                    if j < len(s) and s[j] in ':,}]':
+                        inside = False
+                        result.append(ch)
+                    else:
+                        # It's an unescaped inner quote — escape it
+                        result.append('\\"')
+            else:
+                result.append(ch)
+            i += 1
+        return ''.join(result)
+
+    text = fix_inner_quotes(text)
+
+    # Stage 3 — Remove any non-printable chars that slipped through
+    text = re.sub(r'[\x00-\x1f\x7f]', ' ', text)
+
+    return text
 
 
 def extract_json(text):
     cleaned = clean_json_text(text)
+
+    # Try 1 — direct parse
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        cleaned = re.sub(r',\s*([}\]])', r'\1', cleaned)
-        return json.loads(cleaned)
+        pass
 
-# =========================
-# PROMPT BUILDER
-# =========================
+    # Try 2 — repair then parse
+    try:
+        repaired = repair_json(cleaned)
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        pass
+
+    # Try 3 — aggressive: strip everything after last valid closing brace
+    try:
+        repaired = repair_json(cleaned)
+        # Find the last valid } by trying progressively shorter strings
+        for i in range(len(repaired), 0, -100):
+            chunk = repaired[:i]
+            last  = chunk.rfind('}')
+            if last == -1:
+                continue
+            chunk = chunk[:last+1]
+            # Balance braces
+            opens  = chunk.count('{')
+            closes = chunk.count('}')
+            if opens == closes:
+                try:
+                    return json.loads(chunk)
+                except:
+                    continue
+    except Exception:
+        pass
+
+    # Try 4 — switch to ast.literal_eval as last resort
+    try:
+        import ast
+        return ast.literal_eval(cleaned)
+    except Exception as e:
+        raise ValueError(f"All JSON repair attempts failed: {e}")
 
 def build_prompt(user_input):
     return f"""
